@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <yt:channelId>UC1234567890abcdefghijkl</yt:channelId>
+ <title>Test Channel</title>
+ <entry>
+  <id>yt:video:AAAAAAAAAAA</id>
+  <yt:videoId>AAAAAAAAAAA</yt:videoId>
+  <title>Newest full episode</title>
+  <published>2026-10-25T12:00:00+00:00</published>
+ </entry>
+ <entry>
+  <id>yt:video:BBBBBBBBBBB</id>
+  <yt:videoId>BBBBBBBBBBB</yt:videoId>
+  <title>Quick one #Shorts</title>
+  <published>2026-10-24T12:00:00+00:00</published>
+ </entry>
+ <entry>
+  <id>yt:video:CCCCCCCCCCC</id>
+  <yt:videoId>CCCCCCCCCCC</yt:videoId>
+  <title>Older episode &amp; friends</title>
+  <published>2026-10-20T12:00:00+00:00</published>
+ </entry>
+</feed>
