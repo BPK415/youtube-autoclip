@@ -1,0 +1,15 @@
+{
+  "channelId": "UCxxxxxxxxxxxxxxxxxxxxxx",
+  "clipCount": 10,
+  "clipDurations": [[30, 60]],
+  "aspectRatio": "portrait",
+  "enableCaption": true,
+  "enableAutoHook": true,
+  "model": "ClipBasic",
+  "brandTemplateId": null,
+  "skipTitlePatterns": ["#shorts"],
+  "maxInFlight": 4,
+  "maxProjectAgeHours": 24,
+  "outputDir": "./clips",
+  "stateFile": "./state.json"
+}
