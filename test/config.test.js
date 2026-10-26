@@ -27,3 +27,20 @@ test('validateConfig rejects bad durations, aspect, model, booleans', () => {
   assert.throws(() => validateConfig({ ...GOOD, model: 'ClipMagic' }), ConfigError);
   assert.throws(() => validateConfig({ ...GOOD, enableCaption: 'yes' }), ConfigError);
 });
+
+test('post block defaults to disabled YouTube at minScore 80 and merges overrides', () => {
+  const c = validateConfig(GOOD, '/base');
+  assert.deepEqual(c.post, { enabled: false, minScore: 80, platforms: ['YOUTUBE'], privacy: 'public', mediaType: null });
+  const o = validateConfig({ ...GOOD, post: { enabled: true, minScore: 85 } }, '/base');
+  assert.equal(o.post.enabled, true);
+  assert.equal(o.post.minScore, 85);
+  assert.deepEqual(o.post.platforms, ['YOUTUBE']);
+});
+
+test('post block rejects bad values', () => {
+  assert.throws(() => validateConfig({ ...GOOD, post: { minScore: 120 } }), ConfigError);
+  assert.throws(() => validateConfig({ ...GOOD, post: { platforms: [] } }), ConfigError);
+  assert.throws(() => validateConfig({ ...GOOD, post: { platforms: ['MYSPACE'] } }), ConfigError);
+  assert.throws(() => validateConfig({ ...GOOD, post: { privacy: 'secret' } }), ConfigError);
+  assert.throws(() => validateConfig({ ...GOOD, post: { enabled: 'yes' } }), ConfigError);
+});

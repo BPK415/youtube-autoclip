@@ -83,3 +83,18 @@ test('error code mapping: cap, 401, 403, 500, 404', async () => {
   assert.equal(await codeOf({ status: 500 }), 'SERVER_ERROR');
   assert.equal(await codeOf({ status: 404, body: { message: 'gone' } }), 'CLIENT_ERROR');
 });
+
+test('listSocialAccounts hits ?q=mine and unwraps {data}', async () => {
+  const { client, calls } = mk([{ status: 200, body: { data: [{ postAccountId: 'acc1', platform: 'YOUTUBE' }] } }]);
+  assert.deepEqual(await client.listSocialAccounts(), [{ postAccountId: 'acc1', platform: 'YOUTUBE' }]);
+  assert.equal(calls[0].url, 'https://api.opus.pro/api/social-accounts?q=mine');
+});
+
+test('createPostTask posts the body and returns the post id', async () => {
+  const { client, calls } = mk([{ status: 201, body: { data: { postId: 'post-1' } } }]);
+  const out = await client.createPostTask({ projectId: 'P', clipId: 'C', postAccountId: 'acc1', postDetail: { title: 'T' } });
+  assert.deepEqual(out, { postId: 'post-1' });
+  assert.equal(calls[0].url, 'https://api.opus.pro/api/post-tasks');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.match(calls[0].init.body, /"clipId":"C"/);
+});

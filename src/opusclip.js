@@ -48,15 +48,21 @@ export function createClient({ apiKey, orgId = null, baseUrl = 'https://api.opus
     }
   }
 
+  const unwrapList = (d) => {
+    if (Array.isArray(d)) return d;
+    if (d && Array.isArray(d.data)) return d.data;
+    if (d && Array.isArray(d.items)) return d.items;
+    return [];
+  };
+
   return {
     createProject: (body) => request('POST', '/api/clip-projects', body),
     getProject: (id) => request('GET', `/api/clip-projects/${encodeURIComponent(id)}`),
-    listClips: async (projectId) => {
-      const d = await request('GET', `/api/exportable-clips?q=findByProjectId&projectId=${encodeURIComponent(projectId)}&pageSize=100`);
-      if (Array.isArray(d)) return d;
-      if (d && Array.isArray(d.data)) return d.data;
-      if (d && Array.isArray(d.items)) return d.items;
-      return [];
+    listClips: async (projectId) => unwrapList(await request('GET', `/api/exportable-clips?q=findByProjectId&projectId=${encodeURIComponent(projectId)}&pageSize=100`)),
+    listSocialAccounts: async () => unwrapList(await request('GET', '/api/social-accounts?q=mine')),
+    createPostTask: async (body) => {
+      const d = await request('POST', '/api/post-tasks', body);
+      return d && d.data ? d.data : d;
     },
   };
 }

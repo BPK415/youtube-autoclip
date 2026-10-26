@@ -18,10 +18,13 @@ export const DEFAULTS = Object.freeze({
   maxProjectAgeHours: 24,
   outputDir: './clips',
   stateFile: './state.json',
+  post: Object.freeze({ enabled: false, minScore: 80, platforms: ['YOUTUBE'], privacy: 'public', mediaType: null }),
 });
 
 const ASPECTS = ['portrait', 'square', 'landscape', 'four_five'];
 const MODELS = ['ClipBasic', 'ClipAnything'];
+export const PLATFORMS = ['YOUTUBE', 'TIKTOK_BUSINESS', 'FACEBOOK_PAGE', 'INSTAGRAM_BUSINESS', 'LINKEDIN', 'TWITTER'];
+const PRIVACY = ['public', 'private', 'unlisted'];
 export const CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 
 export function parseDotEnv(text) {
@@ -51,7 +54,7 @@ const isPair = (p) => Array.isArray(p) && p.length === 2 && p.every(Number.isInt
 
 export function validateConfig(raw, baseDir = process.cwd()) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ConfigError('config must be a JSON object');
-  const c = { ...DEFAULTS, ...raw };
+  const c = { ...DEFAULTS, ...raw, post: { ...DEFAULTS.post, ...(raw.post ?? {}) } };
   if (!CHANNEL_ID_RE.test(c.channelId ?? '')) throw new ConfigError('channelId must look like UC… (24 chars). Run: autoclip resolve @yourhandle');
   if (!isPosInt(c.clipCount)) throw new ConfigError('clipCount must be a positive integer');
   if (!Array.isArray(c.clipDurations) || c.clipDurations.length === 0 || !c.clipDurations.every(isPair)) throw new ConfigError('clipDurations must be a non-empty array of [minSec, maxSec] pairs');
@@ -62,6 +65,12 @@ export function validateConfig(raw, baseDir = process.cwd()) {
   if (!(typeof c.maxProjectAgeHours === 'number' && c.maxProjectAgeHours > 0)) throw new ConfigError('maxProjectAgeHours must be a number > 0');
   for (const k of ['enableCaption', 'enableAutoHook']) if (typeof c[k] !== 'boolean') throw new ConfigError(`${k} must be true or false`);
   if (c.brandTemplateId !== null && typeof c.brandTemplateId !== 'string') throw new ConfigError('brandTemplateId must be a string or null');
+  const p = c.post;
+  if (typeof p.enabled !== 'boolean') throw new ConfigError('post.enabled must be true or false');
+  if (!(typeof p.minScore === 'number' && p.minScore >= 0 && p.minScore <= 99)) throw new ConfigError('post.minScore must be a number from 0 to 99 (Opus Clip virality score)');
+  if (!Array.isArray(p.platforms) || p.platforms.length === 0 || !p.platforms.every((x) => PLATFORMS.includes(x))) throw new ConfigError(`post.platforms must be a non-empty array of ${PLATFORMS.join(', ')}`);
+  if (!PRIVACY.includes(p.privacy)) throw new ConfigError(`post.privacy must be one of ${PRIVACY.join(', ')}`);
+  if (p.mediaType !== null && typeof p.mediaType !== 'string') throw new ConfigError('post.mediaType must be a string or null');
   c.outputDir = path.resolve(baseDir, c.outputDir);
   c.stateFile = path.resolve(baseDir, c.stateFile);
   return c;
