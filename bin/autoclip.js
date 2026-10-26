@@ -21,6 +21,8 @@ Usage:
       Print the channel id to paste into config.json.
   autoclip status [--config config.json]
       Show every tracked video and its state.
+  autoclip accounts [--config config.json]
+      List the social accounts connected in Opus Clip (what posting can target).
 
 Secrets: OPUSCLIP_API_KEY (required for run/submit), OPUSCLIP_ORG_ID (optional), via env or a .env file next to config.json.
 `;
@@ -31,7 +33,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function printSummary(summary) {
   if (summary.length === 0) { log('nothing to do'); return; }
   for (const s of summary) {
-    const extra = s.projectId ? ` project=${s.projectId}` : s.clips !== undefined ? ` clips=${s.clips}` : s.error ? ` (${s.error})` : '';
+    const extra = s.status === 'posted' ? ` clip=${s.clipId} score=${s.score} -> ${s.platform}`
+      : s.projectId ? ` project=${s.projectId}` : s.clips !== undefined ? ` clips=${s.clips}` : s.error ? ` (${s.error})` : '';
     log(`${s.videoId}: ${s.status}${extra}`);
   }
 }
@@ -87,6 +90,20 @@ async function cmdSubmit(cfg, target) {
   await passAndSave(cfg, client, { feed: null });
 }
 
+async function cmdAccounts(cfg) {
+  const client = makeClient(cfg);
+  const accounts = await client.listSocialAccounts();
+  if (accounts.length === 0) { console.log('no social accounts connected in Opus Clip (connect one in the Opus Clip web app under Social accounts)'); return; }
+  const pad = (s, n) => String(s ?? '').padEnd(n);
+  console.log(`${pad('platform', 20)}${pad('postAccountId', 28)}name`);
+  for (const a of accounts) console.log(`${pad(a.platform, 20)}${pad(a.postAccountId, 28)}${a.extUserName ?? ''}${a.subAccountId ? `  (sub ${a.subAccountId})` : ''}`);
+  const wanted = cfg.post.platforms.filter((p) => !accounts.some((a) => a.platform === p));
+  if (wanted.length) console.log(`
+config wants ${wanted.join(', ')} but no such account is connected`);
+  console.log(`
+posting is ${cfg.post.enabled ? `ON: clips scoring ${cfg.post.minScore}+ go to ${cfg.post.platforms.join(', ')} as ${cfg.post.privacy}` : 'OFF (set post.enabled to true in config.json)'}`);
+}
+
 async function cmdResolve(target) {
   if (!target) throw new ConfigError('resolve needs a handle, channel url, or UC id');
   console.log(await resolveChannelId(target));
@@ -97,11 +114,13 @@ function cmdStatus(cfg) {
   const rows = Object.entries(state.videos).sort(([, a], [, b]) => (a.publishedAt < b.publishedAt ? 1 : -1));
   if (rows.length === 0) { console.log('no videos tracked yet'); return; }
   const pad = (s, n) => String(s ?? '').padEnd(n);
-  console.log(`${pad('video', 12)}${pad('status', 10)}${pad('project', 16)}${pad('clips', 6)}title / note`);
+  console.log(`${pad('video', 12)}${pad('status', 10)}${pad('project', 16)}${pad('clips', 6)}${pad('posted', 8)}title / note`);
   for (const [id, v] of rows) {
     const note = v.error && v.status !== 'complete' ? `${v.title} — ${v.error}` : v.title;
-    console.log(`${pad(id, 12)}${pad(v.status, 10)}${pad(v.projectId, 16)}${pad(v.clips ? v.clips.length : '', 6)}${note}`);
+    const posted = v.posts ? `${Object.keys(v.posts).length}${v.postPending ? '*' : ''}` : '';
+    console.log(`${pad(id, 12)}${pad(v.status, 10)}${pad(v.projectId, 16)}${pad(v.clips ? v.clips.length : '', 6)}${pad(posted, 8)}${note}`);
   }
+  if (rows.some(([, v]) => v.postPending)) console.log('\n* = some posts still pending (retried each run)');
   if (state.capReachedAt) console.log(`\nmonthly API cap reached at ${state.capReachedAt}; submits resume next month`);
   console.log(`\nbaselined: ${state.baselinedAt ?? 'not yet (first run will baseline)'}  state: ${cfg.stateFile}`);
 }
@@ -124,6 +143,7 @@ async function main() {
   if (cmd === 'run') return cmdRun(cfg, values);
   if (cmd === 'submit') return cmdSubmit(cfg, target);
   if (cmd === 'status') return cmdStatus(cfg);
+  if (cmd === 'accounts') return cmdAccounts(cfg);
   throw new ConfigError(`unknown command: ${cmd}\n\n${USAGE}`);
 }
 

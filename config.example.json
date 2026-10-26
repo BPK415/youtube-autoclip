@@ -11,5 +11,12 @@
   "maxInFlight": 4,
   "maxProjectAgeHours": 24,
   "outputDir": "./clips",
-  "stateFile": "./state.json"
+  "stateFile": "./state.json",
+  "post": {
+    "enabled": false,
+    "minScore": 80,
+    "platforms": ["YOUTUBE"],
+    "privacy": "public",
+    "mediaType": null
+  }
 }

@@ -36,3 +36,11 @@ test('run without an api key exits 1 mentioning OPUSCLIP_API_KEY', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /OPUSCLIP_API_KEY/);
 });
+
+test('accounts without an api key exits 1 mentioning OPUSCLIP_API_KEY', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-cli-'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ channelId: 'UC1234567890abcdefghijkl' }));
+  const r = run(['accounts'], dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /OPUSCLIP_API_KEY/);
+});
