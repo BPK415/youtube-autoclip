@@ -2,6 +2,8 @@
 
 Watches one YouTube channel. Every new public upload is sent to [Opus Clip](https://www.opus.pro),
 cut into short clips, and the **top 10 clips are downloaded** to a folder with a manifest.
+Optionally, every clip Opus Clip scores **80 or higher** is **posted automatically** as a
+YouTube Short to the channel connected in your Opus Clip account.
 
 Zero npm dependencies. Runs anywhere Node 20+ runs: a Mac, a Linux box, a Windows machine,
 or a scheduled job. One short pass per run; state lives in a single JSON file.
@@ -37,6 +39,11 @@ node bin/autoclip.js resolve @yourhandle   # prints UC... — paste into config.
 | `maxInFlight` | projects processing at once (Opus Clip allows 4 on Pro/Max) |
 | `maxProjectAgeHours` | give up on a project still processing after this long |
 | `outputDir`, `stateFile` | where clips and the state file go (relative to `config.json`) |
+| `post.enabled` | `true` to auto-post; default `false` so nothing publishes until you say so |
+| `post.minScore` | Opus Clip virality score threshold, 0–99; clips at or above it are posted (default 80) |
+| `post.platforms` | which connected Opus Clip accounts to post to; default `["YOUTUBE"]` |
+| `post.privacy` | `public`, `unlisted`, or `private` (YouTube privacy; default `public`) |
+| `post.mediaType` | platform media type override, normally leave `null` |
 
 Secrets are read from the environment first, then from `.env` next to `config.json`:
 `OPUSCLIP_API_KEY` (required), `OPUSCLIP_ORG_ID` (only if your login has several orgs).
@@ -48,7 +55,8 @@ node bin/autoclip.js run                 # one pass
 node bin/autoclip.js run --backfill 3    # first run only: also clip the 3 most recent uploads
 node bin/autoclip.js run --watch 10      # keep running, one pass every 10 minutes
 node bin/autoclip.js submit <youtube-url>   # clip one video by hand (good for testing)
-node bin/autoclip.js status              # table of tracked videos
+node bin/autoclip.js status              # table of tracked videos (and posts)
+node bin/autoclip.js accounts            # social accounts connected in Opus Clip, and whether posting is on
 node bin/autoclip.js resolve @handle     # channel handle/url -> UC... id
 ```
 
@@ -61,10 +69,43 @@ node bin/autoclip.js resolve @handle     # channel handle/url -> UC... id
 4. Checks every in-flight project. When one is `COMPLETE`, lists its clips, keeps the first
    `clipCount` that have an export URL, downloads them to
    `clips/<videoId>/01-<title>.mp4 …` and writes `clips/<videoId>/manifest.json`.
-5. Saves `state.json` atomically. Every step is safe to re-run.
+5. If `post.enabled` is true, every clip in that project scoring `post.minScore` or higher is
+   posted to each connected account whose platform is in `post.platforms`, using the clip's
+   own title, description, and hashtags. Each post is recorded in `state.json` with its post
+   id, so a clip is never posted twice; a post that fails is retried on the next pass.
+6. Saves `state.json` atomically. Every step is safe to re-run.
 
 Processing takes Opus Clip a few minutes to an hour, so a video usually completes a few
 passes after it was submitted.
+
+## Auto-posting to YouTube Shorts
+
+1. In the Opus Clip web app, connect the YouTube channel under *Social accounts*.
+2. Run `node bin/autoclip.js accounts` and confirm a `YOUTUBE` row appears.
+3. In `config.json` set `"post": { "enabled": true, "minScore": 80, "platforms": ["YOUTUBE"], "privacy": "unlisted" }`
+   for the first video, check the result on YouTube, then switch `privacy` to `public`.
+4. Clips are rendered portrait and 30–60 s by default, which YouTube classifies as Shorts on
+   its own; no special flag is needed. If a post lands as a regular video, set
+   `post.mediaType` to `"short"` and try again.
+
+Notes: Opus Clip marks its posting API as beta and says per-post pricing may change. Posting
+to X costs credits per post. The score is Opus Clip's 0–99 virality score, the same number
+shown next to each clip in their web app. The gate is independent of `clipCount`: if 12 clips
+score 80+, all 12 are posted even though only 10 are downloaded.
+
+## Running it on another machine or account
+
+Nothing here is tied to a person. To hand it to someone else:
+
+1. Give them access to this repo (GitHub → Settings → Collaborators) and have them clone it.
+2. They create their **own** Opus Clip API key (Pro/Max/Business) and put it in their `.env`.
+3. They connect their YouTube channel inside **their** Opus Clip account, since posting goes
+   through whichever Opus Clip org the API key belongs to.
+4. They set `channelId` to the channel to watch and `post.enabled` as they like.
+5. `state.json` and `clips/` are per machine and git-ignored; the first run baselines fresh.
+
+If they use Claude Code, `CLAUDE.md` in this repo tells Claude how to operate and troubleshoot
+the tool.
 
 ## Scheduling
 
@@ -126,10 +167,13 @@ Do this once the API key works, before trusting the schedule:
    for the REST API: set `enableCaption` to match your brand template and remove it from
    `buildProjectBody` in `src/opusclip.js` if it keeps failing.
 2. Run `node bin/autoclip.js run` every few minutes until `status` shows `complete`, then open
-   `clips/<videoId>/` and check the 10 files are the ones Opus Clip ranks highest in its
-   dashboard. If the order differs, the dashboard's ranking is not the API's list order and
-   the selection in `src/run.js` (`collect`) needs a sort.
+   `clips/<videoId>/manifest.json` and check each clip has a numeric `score`. Clips are
+   sorted by that score, so the 10 files should match the top of Opus Clip's dashboard.
+   If `score` is `null`, the API stopped returning it and `collect` in `src/run.js` falls back
+   to list order; posting would then never trigger.
 3. Confirm a fresh upload shows up in the feed within a few minutes of going public.
+4. If posting is on: confirm the first post appears on the channel with the expected title,
+   description, and privacy.
 
 ## Development
 
