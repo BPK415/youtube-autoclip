@@ -19,11 +19,13 @@ const cfg = (over = {}) => validateConfig({ channelId: CH, ...over }, fs.mkdtemp
 const feedOf = (entries) => async () => entries;
 const done = (id) => ({ id, stage: 'COMPLETE' });
 const fakeClient = (over = {}) => {
-  const calls = { create: [], get: [], list: [] };
+  const calls = { create: [], get: [], list: [], accounts: [], post: [] };
   return { calls, client: {
     createProject: async (b) => { calls.create.push(b); return over.create ? over.create(b) : { id: 'P' + b.videoUrl.slice(-11), stage: 'QUEUED' }; },
     getProject: async (id) => { calls.get.push(id); return over.get ? over.get(id) : { id, stage: 'QUEUED' }; },
     listClips: async (id) => { calls.list.push(id); return over.list ? over.list(id) : []; },
+    listSocialAccounts: async () => { calls.accounts.push(1); return over.accounts ? over.accounts() : []; },
+    createPostTask: async (b) => { calls.post.push(b); return over.post ? over.post(b) : { postId: 'post-' + b.clipId + '-' + b.postAccountId }; },
   } };
 };
 const downloads = [];
@@ -31,7 +33,7 @@ const fakeDownload = async (url, dest) => { downloads.push({ url, dest }); fs.mk
 const failingDownload = async () => { throw new Error('boom'); };
 const clips = (n, withUrl = true) => Array.from({ length: n }, (_, i) => ({ id: `P.c${i + 1}`, title: `Clip ${i + 1}!`, durationMs: 1000 * (i + 1), uriForExport: withUrl ? `https://cdn/c${i + 1}.mp4` : undefined }));
 const submitted = (id, projectId, submittedAt = '2026-10-25T17:00:00.000Z') => ({ title: 't', publishedAt: 'p', status: 'submitted', projectId, submittedAt });
-const base = (over = {}) => ({ now: () => NOW, log: () => {}, download: fakeDownload, ...over });
+const base = (over = {}) => ({ now: () => NOW, log: () => {}, download: fakeDownload, sleep: async () => {}, ...over });
 
 test('first run baselines every feed entry as skipped and submits nothing', async () => {
   const state = emptyState();
@@ -155,4 +157,97 @@ test('feed error skips discovery but still checks in-flight projects', async () 
   assert.equal(calls.get.length, 1);
   assert.equal(state.videos.A.status, 'complete');
   assert.ok(logs.some((m) => /rss down/.test(m)));
+});
+
+const scoredClips = () => [
+  { id: 'P1.c-low', title: 'Low', durationMs: 1000, score: 55, rank: 3, uriForExport: 'https://cdn/low.mp4', description: 'd-low', hashtags: ['#a'] },
+  { id: 'P1.c-top', title: 'Top', durationMs: 1000, score: 92, rank: 1, uriForExport: 'https://cdn/top.mp4', description: 'd-top', hashtags: ['shorts', '#viral'] },
+  { id: 'P1.c-mid', title: 'Mid', durationMs: 1000, score: 80, rank: 2, uriForExport: 'https://cdn/mid.mp4', description: '', hashtags: 'x y' },
+  { id: 'P1.c-nourl', title: 'NoUrl', durationMs: 1000, score: 99, rank: 0 },
+];
+const ACCOUNTS = [
+  { postAccountId: 'tt1', platform: 'TIKTOK_BUSINESS', extUserName: 'tt' },
+  { postAccountId: 'yt1', platform: 'YOUTUBE', extUserName: 'My Channel' },
+];
+const completeState = () => ({ ...emptyState(), baselinedAt: 'x', videos: { AAAAAAAAAAA: submitted('AAAAAAAAAAA', 'P1') } });
+
+test('clips are ordered by score before taking clipCount; score and rank land in the manifest', async () => {
+  downloads.length = 0;
+  const config = cfg({ clipCount: 2 });
+  const state = completeState();
+  const { client } = fakeClient({ get: done, list: scoredClips });
+  await runPass(base({ config, state, client, feed: null }));
+  assert.deepEqual(downloads.map((d) => d.url), ['https://cdn/top.mp4', 'https://cdn/mid.mp4']);
+  const manifest = JSON.parse(fs.readFileSync(path.join(config.outputDir, 'AAAAAAAAAAA', 'manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.clips.map((c) => [c.score, c.rank]), [[92, 1], [80, 2]]);
+});
+
+test('posting disabled: no social account lookup, no posts', async () => {
+  const state = completeState();
+  const { client, calls } = fakeClient({ get: done, list: scoredClips, accounts: () => ACCOUNTS });
+  await runPass(base({ config: cfg(), state, client, feed: null }));
+  assert.equal(calls.accounts.length, 0);
+  assert.equal(calls.post.length, 0);
+  assert.equal(state.videos.AAAAAAAAAAA.postPending, undefined);
+});
+
+test('posting enabled: clips at or above minScore go to the YOUTUBE account only, once each', async () => {
+  const config = cfg({ post: { enabled: true, minScore: 80, privacy: 'unlisted' } });
+  const state = completeState();
+  const { client, calls } = fakeClient({ get: done, list: scoredClips, accounts: () => ACCOUNTS });
+  const summary = await runPass(base({ config, state, client, feed: null }));
+  assert.equal(calls.accounts.length, 1);
+  assert.deepEqual(calls.post.map((b) => [b.clipId, b.postAccountId]), [['c-top', 'yt1'], ['c-mid', 'yt1']]);
+  const top = calls.post[0];
+  assert.equal(top.projectId, 'P1');
+  assert.equal(top.postDetail.title, 'Top');
+  assert.equal(top.postDetail.custom.description, 'd-top\n\n#shorts #viral');
+  assert.equal(top.postDetail.custom.privacy, 'unlisted');
+  assert.equal('mediaType' in top.postDetail, false);
+  assert.equal(calls.post[1].postDetail.custom.description, '#x #y');
+  const v = state.videos.AAAAAAAAAAA;
+  assert.equal(v.status, 'complete');
+  assert.equal(v.postPending, false);
+  assert.deepEqual(Object.keys(v.posts), ['c-top:yt1', 'c-mid:yt1']);
+  assert.equal(v.posts['c-top:yt1'].postId, 'post-c-top-yt1');
+  assert.deepEqual(summary.filter((s) => s.status === 'posted').map((s) => s.clipId), ['c-top', 'c-mid']);
+  await runPass(base({ config, state, client, feed: null }));
+  assert.equal(calls.post.length, 2);
+});
+
+test('a failed post is retried next pass without re-posting the one that succeeded', async () => {
+  const config = cfg({ post: { enabled: true } });
+  const state = completeState();
+  let fails = 1;
+  const { client, calls } = fakeClient({ get: done, list: scoredClips, accounts: () => ACCOUNTS, post: (b) => {
+    if (b.clipId === 'c-mid' && fails-- > 0) throw new OpusClipError('oops', { status: 500, code: 'SERVER_ERROR' });
+    return { postId: 'ok-' + b.clipId };
+  } });
+  await runPass(base({ config, state, client, feed: null }));
+  const v = state.videos.AAAAAAAAAAA;
+  assert.equal(v.postPending, true);
+  assert.deepEqual(Object.keys(v.posts), ['c-top:yt1']);
+  await runPass(base({ config, state, client, feed: null }));
+  assert.equal(v.postPending, false);
+  assert.deepEqual(calls.post.map((b) => b.clipId), ['c-top', 'c-mid', 'c-mid']);
+});
+
+test('no connected account for the platform: nothing posted, stays pending, logged', async () => {
+  const config = cfg({ post: { enabled: true } });
+  const state = completeState();
+  const logs = [];
+  const { client, calls } = fakeClient({ get: done, list: scoredClips, accounts: () => [ACCOUNTS[0]] });
+  await runPass(base({ config, state, client, feed: null, log: (m) => logs.push(m) }));
+  assert.equal(calls.post.length, 0);
+  assert.equal(state.videos.AAAAAAAAAAA.postPending, true);
+  assert.ok(logs.some((m) => /no connected YOUTUBE account/.test(m)));
+});
+
+test('posting enabled with nothing above minScore: complete, not pending', async () => {
+  const config = cfg({ post: { enabled: true, minScore: 95 } });
+  const state = completeState();
+  const { client, calls } = fakeClient({ get: done, list: scoredClips, accounts: () => ACCOUNTS });
+  await runPass(base({ config, state, client, feed: null }));
+  assert.equal(calls.post.length, 0);
+  assert.equal(state.videos.AAAAAAAAAAA.postPending, false);
 });

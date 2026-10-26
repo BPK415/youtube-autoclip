@@ -6,12 +6,40 @@ import { slugify } from './download.js';
 import { watchUrl } from './youtube.js';
 
 const PROJECT_TTL_DAYS = 30;
+const POST_INTERVAL_MS = 1100; // Opus Clip allows 1 post request per second
+const YOUTUBE_TITLE_MAX = 100;
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const byPublished = (a, b) => (a.publishedAt < b.publishedAt ? -1 : a.publishedAt > b.publishedAt ? 1 : 0);
+const scoreOf = (c) => (typeof c.score === 'number' ? c.score : -1);
+const byScoreDesc = (a, b) => scoreOf(b) - scoreOf(a);
 const matchesSkip = (title, patterns) => patterns.some((p) => title.toLowerCase().includes(p.toLowerCase()));
 const hoursSince = (iso, now) => (now - new Date(iso)) / 3.6e6;
 const fail = (v, error) => { v.status = 'failed'; v.error = error; };
 
-export async function runPass({ config, state, client, feed, download, now = () => new Date(), log = () => {}, backfill = 0 }) {
+/** Opus Clip returns clip ids as "{projectId}.{clipId}"; posting wants the bare part. */
+export function bareClipId(id) {
+  const [, ...rest] = String(id).split('.');
+  return rest.length ? rest.join('.') : String(id);
+}
+
+export function normalizeHashtags(h) {
+  const list = Array.isArray(h) ? h : typeof h === 'string' ? h.split(/[\s,]+/) : [];
+  return list.map((t) => String(t).trim().replace(/^#+/, '')).filter(Boolean).map((t) => `#${t}`);
+}
+
+export function buildPostBody(projectId, clip, account, post) {
+  const title = (clip.title || 'Clip').trim().slice(0, YOUTUBE_TITLE_MAX);
+  const tags = normalizeHashtags(clip.hashtags).join(' ');
+  const description = [clip.description?.trim(), tags].filter(Boolean).join('\n\n') || title;
+  const postDetail = { title, custom: { description, privacy: post.privacy } };
+  if (post.mediaType) postDetail.mediaType = post.mediaType;
+  const body = { projectId, clipId: clip.clipId, postAccountId: account.postAccountId, postDetail };
+  if (account.subAccountId) body.subAccountId = account.subAccountId;
+  return body;
+}
+
+export async function runPass({ config, state, client, feed, download, now = () => new Date(), log = () => {}, backfill = 0, sleep = defaultSleep }) {
   const summary = [];
   if (state.capReachedAt && !isCapActive(state, now())) state.capReachedAt = null;
 
@@ -22,6 +50,7 @@ export async function runPass({ config, state, client, feed, download, now = () 
   }
   await submitPending({ state, config, client, now: now(), summary, log });
   await checkSubmitted({ state, config, client, download, now: now(), summary, log });
+  if (config.post.enabled) await postPending({ state, config, client, now: now(), summary, log, sleep });
   return summary;
 }
 
@@ -100,7 +129,8 @@ async function collect({ id, v, config, client, download, now, summary, log }) {
     log(`list clips ${id} failed, will retry: ${e.message}`);
     return;
   }
-  const chosen = clips.filter((c) => c && c.uriForExport).slice(0, config.clipCount);
+  const usable = clips.filter((c) => c && c.uriForExport).sort(byScoreDesc);
+  const chosen = usable.slice(0, config.clipCount);
   if (chosen.length === 0) { fail(v, 'no exportable clips'); summary.push({ videoId: id, status: 'failed', error: v.error }); return; }
   const dir = path.join(config.outputDir, id);
   const results = [];
@@ -116,7 +146,7 @@ async function collect({ id, v, config, client, download, now, summary, log }) {
         return;
       }
     }
-    results.push({ id: c.id, title: c.title, durationMs: c.durationMs, file: path.relative(config.outputDir, file) });
+    results.push({ id: c.id, title: c.title, durationMs: c.durationMs, score: c.score ?? null, rank: c.rank ?? null, file: path.relative(config.outputDir, file) });
   }
   fs.mkdirSync(dir, { recursive: true });
   const manifest = { videoId: id, title: v.title, sourceUrl: watchUrl(id), projectId: v.projectId, completedAt: now.toISOString(), clips: results };
@@ -125,4 +155,52 @@ async function collect({ id, v, config, client, download, now, summary, log }) {
   v.completedAt = now.toISOString();
   v.clips = results;
   summary.push({ videoId: id, status: 'complete', clips: results.length });
+
+  if (config.post.enabled) {
+    v.toPost = usable
+      .filter((c) => scoreOf(c) >= config.post.minScore)
+      .map((c) => ({ clipId: bareClipId(c.id), title: c.title, description: c.description, hashtags: c.hashtags, score: c.score }));
+    v.posts = v.posts ?? {};
+    v.postPending = v.toPost.length > 0;
+    if (!v.postPending) log(`${id}: no clips scored ${config.post.minScore}+, nothing to post`);
+  }
+}
+
+async function postPending({ state, config, client, now, summary, log, sleep }) {
+  const queue = videosByStatus(state, 'complete').filter(([, v]) => v.postPending && Array.isArray(v.toPost));
+  if (queue.length === 0) return;
+  let accounts;
+  try {
+    accounts = await client.listSocialAccounts();
+  } catch (e) {
+    if (e.code === 'UNAUTHORIZED') throw e;
+    log(`could not list social accounts, will retry: ${e.message}`);
+    return;
+  }
+  const targets = accounts.filter((a) => config.post.platforms.includes(a.platform));
+  for (const platform of config.post.platforms) {
+    if (!targets.some((a) => a.platform === platform)) log(`no connected ${platform} account in Opus Clip; posts wait until one is connected`);
+  }
+  if (targets.length === 0) return;
+
+  for (const [id, v] of queue) {
+    let allDone = true;
+    for (const clip of v.toPost) {
+      for (const account of targets) {
+        const key = `${clip.clipId}:${account.postAccountId}`;
+        if (v.posts[key]) continue;
+        try {
+          const res = await client.createPostTask(buildPostBody(v.projectId, clip, account, config.post));
+          v.posts[key] = { postId: res?.postId ?? null, platform: account.platform, account: account.extUserName ?? account.postAccountId, score: clip.score, at: now.toISOString() };
+          summary.push({ videoId: id, status: 'posted', clipId: clip.clipId, platform: account.platform, score: clip.score });
+        } catch (e) {
+          if (e.code === 'UNAUTHORIZED') throw e;
+          allDone = false;
+          log(`post ${id}/${clip.clipId} to ${account.platform} failed, will retry: ${e.message}`);
+        }
+        await sleep(POST_INTERVAL_MS);
+      }
+    }
+    v.postPending = !allDone;
+  }
 }
